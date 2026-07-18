@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/gustavocarvalho/sbx/internal/naming"
 )
@@ -59,18 +58,6 @@ func (p *Podman) Preflight(ctx context.Context) error {
 	return nil
 }
 
-var (
-	seqMu sync.Mutex
-	seqBy = map[string]int{}
-)
-
-func envNameFor(session string) string {
-	seqMu.Lock()
-	defer seqMu.Unlock()
-	seqBy[session]++
-	return naming.EnvName(session, seqBy[session])
-}
-
 func (p *Podman) createArgs(name, session, image string) []string {
 	args := append(p.baseArgs(), "run", "-d",
 		"--name", name,
@@ -89,11 +76,24 @@ func (p *Podman) run(ctx context.Context, args []string) (string, string, error)
 }
 
 func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (Env, error) {
+	if spec.ComposePath != "" {
+		return Env{}, DriverError{
+			Code:    "compose_unsupported",
+			Message: "compose (--from) is not supported by the podman driver yet",
+			Hint:    "compose support lands in M2; omit --from to create a single-container env",
+		}
+	}
 	image := defaultImage
 	if v := spec.Labels["image"]; v != "" {
 		image = v
 	}
-	name := envNameFor(sessionID) // uses naming + a per-session seq (see Task 1.2)
+	// Sequence is derived from durable state (existing containers for this
+	// session), not process memory, so it survives across CLI invocations.
+	existing, err := p.List(ctx, sessionID)
+	if err != nil {
+		return Env{}, err // p.List already returns a DriverError
+	}
+	name := naming.EnvName(sessionID, len(existing)+1)
 	if _, errs, err := p.run(ctx, p.createArgs(name, sessionID, image)); err != nil {
 		return Env{}, DriverError{Code: "create_failed", Message: strings.TrimSpace(errs), Hint: "verify the image name and that rootless podman can pull it"}
 	}

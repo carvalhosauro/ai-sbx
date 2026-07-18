@@ -2,6 +2,7 @@
 package driver
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,4 +37,17 @@ func TestPodmanCreateArgsShape(t *testing.T) {
 	require.Contains(t, joined, "alpine:3")
 	// nunca publica porta fixa aqui; portas dinâmicas entram em M2
 	require.NotContains(t, joined, "-p 0.0.0.0")
+	// security invariant: Create's argv must always go through the driver's
+	// own storage roots, never the host's default engine state.
+	require.Contains(t, joined, "--root")
+	require.Contains(t, joined, "--runroot")
+}
+
+func TestPodmanCreateRejectsCompose(t *testing.T) {
+	p := NewPodman(t.TempDir())
+	_, err := p.Create(context.Background(), "s", EnvSpec{ComposePath: "compose.yml"})
+	require.Error(t, err)
+	de, ok := err.(DriverError)
+	require.True(t, ok, "expected a DriverError, got %T", err)
+	require.Equal(t, "compose_unsupported", de.Code)
 }

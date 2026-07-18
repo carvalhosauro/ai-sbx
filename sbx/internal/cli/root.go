@@ -44,25 +44,50 @@ func newRootCmdWithDriver(d driver.Driver) *cobra.Command {
 	return root
 }
 
-func Execute() int {
-	sess := resolveSession(os.Getenv("SBX_SESSION"))
-	drv, err := driver.Select(os.Getenv("SBX_DRIVER"), session.StateDir(sess))
-	if err != nil {
-		writeError(os.Stderr, false, err)
-		return 1
-	}
-	if pf, ok := drv.(interface{ Preflight(context.Context) error }); ok {
-		if err := pf.Preflight(context.Background()); err != nil {
-			writeError(os.Stderr, false, err)
-			return 1
+// newProductionRootCmd wires the real driver selection + preflight into
+// PersistentPreRunE, where the parsed --session flag is available. This
+// makes flag → env → default resolution the ONE source of truth for both
+// the driver's storage root (session.StateDir) and deps.session — unlike
+// the old Execute(), which resolved the session from the env var alone
+// (before flag parsing) to build the driver, while deps.session used the
+// --session flag: two sources of truth, and --session gave no storage
+// isolation.
+func newProductionRootCmd() *cobra.Command {
+	root := NewRootCmd()
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		jsonMode, _ := cmd.Flags().GetBool("json")
+		flagSessionValue, _ := cmd.Flags().GetString("session")
+		sess := resolveSession(flagSessionValue)
+
+		drv, err := driver.Select(os.Getenv("SBX_DRIVER"), session.StateDir(sess))
+		if err != nil {
+			return err
 		}
+		if pf, ok := drv.(interface{ Preflight(context.Context) error }); ok {
+			if err := pf.Preflight(cmd.Context()); err != nil {
+				return err
+			}
+		}
+
+		ctx := context.WithValue(cmd.Context(), ctxKey{}, deps{
+			drv:     drv,
+			session: sess,
+			json:    jsonMode,
+		})
+		cmd.SetContext(ctx)
+		return nil
 	}
-	root := newRootCmdWithDriver(drv)
+	return root
+}
+
+func Execute() int {
+	root := newProductionRootCmd()
 	if err := root.Execute(); err != nil {
 		// CLIErrors originating inside a subcommand's RunE are already
 		// rendered by renderErrorsOnReturn (env.go); only render here for
 		// errors that never reach a subcommand's RunE (e.g. cobra's own
-		// arg/flag validation), so the message isn't printed twice.
+		// arg/flag validation, or driver selection/preflight failures from
+		// PersistentPreRunE above), so the message isn't printed twice.
 		if _, alreadyRendered := err.(CLIError); !alreadyRendered {
 			jsonMode, _ := root.Flags().GetBool("json")
 			writeError(root.OutOrStderr(), jsonMode, err)

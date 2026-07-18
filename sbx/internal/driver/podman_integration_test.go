@@ -79,4 +79,42 @@ func TestPodmanExecAndLogsIntegration(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, r.Stdout, "hello")
 	require.Equal(t, 3, r.ExitCode)
+
+	// Logs: the container runs `sleep infinity`, so output may legitimately
+	// be empty. This exercises the Logs code path end-to-end, including
+	// the --tail branch, rather than asserting on log content.
+	_, err = p.Logs(ctx, e.ID, LogOpts{})
+	require.NoError(t, err)
+
+	_, err = p.Logs(ctx, e.ID, LogOpts{Tail: 10})
+	require.NoError(t, err)
+}
+
+func TestPodmanMultiEnvPerSessionIntegration(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not installed")
+	}
+	ctx := context.Background()
+	p := newTestPodman(t)
+	require.NoError(t, p.Preflight(ctx))
+
+	e1, err := p.Create(ctx, "itest03", EnvSpec{})
+	require.NoError(t, err)
+	e2, err := p.Create(ctx, "itest03", EnvSpec{})
+	require.NoError(t, err)
+
+	require.NotEqual(t, e1.Name, e2.Name)
+	require.Contains(t, e1.Name, "-001")
+	require.Contains(t, e2.Name, "-002")
+
+	list, err := p.List(ctx, "itest03")
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	require.NoError(t, p.Destroy(ctx, e1.ID))
+	require.NoError(t, p.Destroy(ctx, e2.ID))
+
+	list, err = p.List(ctx, "itest03")
+	require.NoError(t, err)
+	require.Len(t, list, 0)
 }

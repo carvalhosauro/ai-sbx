@@ -22,3 +22,24 @@ func TestRootHasJSONAndSessionFlags(t *testing.T) {
 	require.NotNil(t, cmd.PersistentFlags().Lookup("json"))
 	require.NotNil(t, cmd.PersistentFlags().Lookup("session"))
 }
+
+func TestProductionRootUnknownDriverErrors(t *testing.T) {
+	t.Setenv("SBX_DRIVER", "bogus")
+	root := newProductionRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--json", "env", "status"})
+
+	err := root.Execute()
+	require.Error(t, err)
+
+	// Mirror Execute()'s double-render guard: PersistentPreRunE errors
+	// (like this one) are not rendered anywhere else, so the production
+	// entry point renders them here, after flags are parsed.
+	if _, alreadyRendered := err.(CLIError); !alreadyRendered {
+		jsonMode, _ := root.Flags().GetBool("json")
+		writeError(root.OutOrStderr(), jsonMode, err)
+	}
+	require.Contains(t, out.String(), "unknown_driver")
+}
