@@ -30,6 +30,9 @@ func (p Printer) Env(e driver.Env) error {
 
 func (p Printer) Envs(list []driver.Env) error {
 	if p.JSON {
+		if list == nil {
+			list = []driver.Env{}
+		}
 		return p.enc(list)
 	}
 	for _, e := range list {
