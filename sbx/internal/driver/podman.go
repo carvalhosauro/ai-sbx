@@ -6,6 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/gustavocarvalho/sbx/internal/naming"
 )
 
 type Podman struct {
@@ -46,4 +49,16 @@ func (p *Podman) Preflight(ctx context.Context) error {
 			"this tool requires rootless podman for host isolation; do not run as root")
 	}
 	return nil
+}
+
+var (
+	seqMu sync.Mutex
+	seqBy = map[string]int{}
+)
+
+func envNameFor(session string) string {
+	seqMu.Lock()
+	defer seqMu.Unlock()
+	seqBy[session]++
+	return naming.EnvName(session, seqBy[session])
 }
