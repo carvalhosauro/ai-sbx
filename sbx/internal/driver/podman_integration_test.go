@@ -63,3 +63,20 @@ func TestPodmanCreateDestroyIntegration(t *testing.T) {
 	list, _ = p.List(ctx, "itest01")
 	require.Len(t, list, 0)
 }
+
+func TestPodmanExecAndLogsIntegration(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not installed")
+	}
+	ctx := context.Background()
+	p := newTestPodman(t)
+	require.NoError(t, p.Preflight(ctx))
+	e, err := p.Create(ctx, "itest02", EnvSpec{})
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e.ID)
+
+	r, err := p.Exec(ctx, e.ID, []string{"sh", "-c", "echo hello && exit 3"})
+	require.NoError(t, err)
+	require.Contains(t, r.Stdout, "hello")
+	require.Equal(t, 3, r.ExitCode)
+}

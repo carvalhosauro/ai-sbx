@@ -4,6 +4,8 @@ package driver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -142,4 +144,34 @@ func (p *Podman) Status(ctx context.Context, id string) (Env, error) {
 	return Env{ID: id, Name: id, Namespace: id, Status: strings.TrimSpace(out)}, nil
 }
 
-// Exec/Logs implemented in Task 1.3.
+func (p *Podman) Exec(ctx context.Context, id string, cmd []string) (ExecResult, error) {
+	args := append(p.baseArgs(), "exec", id)
+	args = append(args, cmd...)
+	c := exec.CommandContext(ctx, p.bin, args...)
+	var out, errb strings.Builder
+	c.Stdout, c.Stderr = &out, &errb
+	err := c.Run()
+	res := ExecResult{Stdout: out.String(), Stderr: errb.String()}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		res.ExitCode = ee.ExitCode()
+		return res, nil // non-zero exit is a valid result, not a driver error
+	}
+	if err != nil {
+		return ExecResult{}, DriverError{Code: "exec_failed", Message: strings.TrimSpace(errb.String()), Hint: "id may not exist or container not running"}
+	}
+	return res, nil
+}
+
+func (p *Podman) Logs(ctx context.Context, id string, opts LogOpts) (string, error) {
+	args := append(p.baseArgs(), "logs")
+	if opts.Tail > 0 {
+		args = append(args, "--tail", fmt.Sprintf("%d", opts.Tail))
+	}
+	args = append(args, id)
+	out, errs, err := p.run(ctx, args)
+	if err != nil {
+		return "", DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+	}
+	return out, nil
+}
