@@ -42,3 +42,13 @@ type Driver interface {
 	List(ctx context.Context, sessionID string) ([]Env, error)
 	Destroy(ctx context.Context, id string) error
 }
+
+// DriverError is a neutral, actionable error type for the driver package. The
+// cli package maps it onto its own CLIError when rendering output.
+type DriverError struct{ Code, Message, Hint string }
+
+func (e DriverError) Error() string { return e.Message }
+
+func CLIErrorLike(code, msg, hint string) error {
+	return DriverError{Code: code, Message: msg, Hint: hint}
+}
