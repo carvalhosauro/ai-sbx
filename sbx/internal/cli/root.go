@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"os"
 
 	"github.com/gustavocarvalho/sbx/internal/driver"
+	"github.com/gustavocarvalho/sbx/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +45,19 @@ func newRootCmdWithDriver(d driver.Driver) *cobra.Command {
 }
 
 func Execute() int {
-	root := newRootCmdWithDriver(driver.NewFake())
+	sess := resolveSession(os.Getenv("SBX_SESSION"))
+	drv, err := driver.Select(os.Getenv("SBX_DRIVER"), session.StateDir(sess))
+	if err != nil {
+		writeError(os.Stderr, false, err)
+		return 1
+	}
+	if pf, ok := drv.(interface{ Preflight(context.Context) error }); ok {
+		if err := pf.Preflight(context.Background()); err != nil {
+			writeError(os.Stderr, false, err)
+			return 1
+		}
+	}
+	root := newRootCmdWithDriver(drv)
 	if err := root.Execute(); err != nil {
 		// CLIErrors originating inside a subcommand's RunE are already
 		// rendered by renderErrorsOnReturn (env.go); only render here for
