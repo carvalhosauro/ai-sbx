@@ -15,3 +15,15 @@ func TestEnvNameShortSession(t *testing.T) {
 		t.Fatalf("got %q", EnvName("ab", 1))
 	}
 }
+
+func TestNetworkName(t *testing.T) {
+	if Network("sbx-abcd-001") != "sbx-abcd-001-net" {
+		t.Fatalf("got %q", Network("sbx-abcd-001"))
+	}
+}
+
+func TestVolumeName(t *testing.T) {
+	if Volume("sbx-abcd-001", "data") != "sbx-abcd-001-data" {
+		t.Fatalf("got %q", Volume("sbx-abcd-001", "data"))
+	}
+}
