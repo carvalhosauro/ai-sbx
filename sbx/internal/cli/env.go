@@ -94,6 +94,7 @@ func newCreateCmd() *cobra.Command {
 		Short: "Create a new ephemeral environment (optionally from a compose file)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			d := depsFrom(cmd)
+			_ = session.ReconcileSession(cmd.Context(), d.drv, d.session)
 			existing, err := d.drv.List(cmd.Context(), d.session)
 			if err != nil {
 				return CLIError{Code: "list_failed", Message: err.Error(), Hint: "the engine may be unavailable; run `sbx env status`"}

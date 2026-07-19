@@ -8,9 +8,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gustavocarvalho/sbx/internal/driver"
 	"github.com/gustavocarvalho/sbx/internal/session"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	reconcileOnStart = func(ctx context.Context, d deps) error {
+		_ = session.ReconcileStale(ctx, func(sid string) (driver.Driver, error) {
+			return driver.Select(os.Getenv("SBX_DRIVER"), session.StateDir(sid))
+		})
+		return session.ReconcileSession(ctx, d.drv, d.session)
+	}
+}
 
 // startSupervisor forks `sbx session supervise`. Overridable in tests.
 var startSupervisor = defaultStartSupervisor
