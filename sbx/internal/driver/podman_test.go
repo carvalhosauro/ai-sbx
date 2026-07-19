@@ -146,6 +146,17 @@ func TestPodmanCreateArgsPublishesDynamically(t *testing.T) {
 	require.NotContains(t, joined, "-p 0.0.0.0") // nunca porta fixa
 }
 
+func TestComposeEnvStub(t *testing.T) {
+	ns := "sbx-abcdefgh-002"
+	e := composeEnvStub(ns)
+	require.Equal(t, ns, e.ID)
+	require.Equal(t, ns, e.Name)
+	require.Equal(t, ns, e.Namespace)
+	require.Equal(t, ns, e.Project)
+	require.Equal(t, ns+"_default", e.Network)
+	require.Equal(t, "degraded", e.Status)
+}
+
 func TestComposeSeqFormula(t *testing.T) {
 	// createCompose and Create (single) share the same seq formula:
 	// seq = len(List) + 1, where List already includes singles and compose projects.

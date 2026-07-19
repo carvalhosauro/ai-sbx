@@ -407,6 +407,19 @@ func (p *Podman) statusCompose(ctx context.Context, namespace string) (Env, erro
 	return env, nil
 }
 
+// composeEnvStub is returned when statusCompose fails so List still counts the
+// project for Create sequencing and SBX_MAX_ENVS. Pure — unit tested.
+func composeEnvStub(namespace string) Env {
+	return Env{
+		ID:        namespace,
+		Name:      namespace,
+		Namespace: namespace,
+		Project:   namespace,
+		Network:   namespace + "_default",
+		Status:    "degraded",
+	}
+}
+
 type psRow struct {
 	Names  []string `json:"Names"`
 	State  string   `json:"State"`
@@ -453,9 +466,11 @@ func (p *Podman) List(ctx context.Context, sessionID string) ([]Env, error) {
 			continue
 		}
 		seen[ns] = true
-		if e, err := p.statusCompose(ctx, ns); err == nil {
-			envs = append(envs, e)
+		e, err := p.statusCompose(ctx, ns)
+		if err != nil {
+			e = composeEnvStub(ns)
 		}
+		envs = append(envs, e)
 	}
 	return envs, nil
 }
