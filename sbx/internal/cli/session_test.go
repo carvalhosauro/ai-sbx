@@ -51,6 +51,37 @@ func TestSessionStartEndDestroysEnvs(t *testing.T) {
 	require.False(t, r2.Alive)
 }
 
+func TestSessionStartProxyNotReadyRollsBack(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	fake := driver.NewFake()
+
+	origSupervisor := startSupervisor
+	origPoll := sessionStartProxyPoll
+	t.Cleanup(func() {
+		startSupervisor = origSupervisor
+		sessionStartProxyPoll = origPoll
+	})
+	startSupervisor = func(sessionID, timeout string) (int, error) {
+		// Forked supervisor never sets ProxyAddr (broken supervise path).
+		return 999999, nil
+	}
+	sessionStartProxyPoll = 50 * time.Millisecond
+
+	root := newRootCmdWithDriver(fake)
+	root.SetArgs([]string{"--session", "demo", "session", "start", "--timeout", "30m"})
+	err := root.Execute()
+	require.Error(t, err)
+
+	var ce CLIError
+	require.ErrorAs(t, err, &ce)
+	require.Equal(t, "proxy_not_ready", ce.Code)
+
+	r, err := session.OpenRegistry("demo")
+	require.NoError(t, err)
+	require.False(t, r.Alive)
+	require.Equal(t, 0, r.SupervisorPID)
+}
+
 func TestSessionHelpListsStartEnd(t *testing.T) {
 	cmd := NewRootCmd()
 	var out bytes.Buffer

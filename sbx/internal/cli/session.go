@@ -49,6 +49,25 @@ func init() {
 // startSupervisor forks `sbx session supervise`. Overridable in tests.
 var startSupervisor = defaultStartSupervisor
 
+// sessionStartProxyPoll is how long start waits for supervise to set ProxyAddr. Overridable in tests.
+var sessionStartProxyPoll = 2 * time.Second
+
+// rollbackFailedSessionStart tears down a partial session start after supervise was forked.
+func rollbackFailedSessionStart(ctx context.Context, d deps, supervisorPID int) {
+	if session.AlivePID(supervisorPID) {
+		if p, err := os.FindProcess(supervisorPID); err == nil {
+			_ = p.Signal(syscall.SIGTERM)
+		}
+	}
+	_ = session.DestroyAll(ctx, d.drv, d.session)
+	if stopSessionProxy != nil {
+		_ = stopSessionProxy(d.session)
+	}
+	if reg, err := session.OpenRegistry(d.session); err == nil {
+		_ = reg.MarkEnded()
+	}
+}
+
 func defaultStartSupervisor(sessionID, timeout string) (int, error) {
 	bin, err := os.Executable()
 	if err != nil {
@@ -123,16 +142,30 @@ func newSessionStartCmd() *cobra.Command {
 			if err := reg.SetSupervisor(pid, deadline); err != nil {
 				return err
 			}
-			pollDeadline := time.Now().Add(2 * time.Second)
+			pollDeadline := time.Now().Add(sessionStartProxyPoll)
+			var pollOpenErr error
 			for time.Now().Before(pollDeadline) {
-				r, _ := session.OpenRegistry(d.session)
+				r, err := session.OpenRegistry(d.session)
+				if err != nil {
+					pollOpenErr = err
+					break
+				}
 				if r.ProxyAddr != "" {
 					break
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
-			r, _ := session.OpenRegistry(d.session)
+			if pollOpenErr != nil {
+				rollbackFailedSessionStart(cmd.Context(), d, pid)
+				return CLIError{Code: "registry_error", Message: pollOpenErr.Error()}
+			}
+			r, err := session.OpenRegistry(d.session)
+			if err != nil {
+				rollbackFailedSessionStart(cmd.Context(), d, pid)
+				return CLIError{Code: "registry_error", Message: err.Error()}
+			}
 			if r.ProxyAddr == "" {
+				rollbackFailedSessionStart(cmd.Context(), d, pid)
 				return CLIError{Code: "proxy_not_ready", Message: "session proxy did not become ready", Hint: "check: sbx session end && sbx session start"}
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session %s started (supervisor pid %d, timeout %s)\n", d.session, pid, timeoutStr)
