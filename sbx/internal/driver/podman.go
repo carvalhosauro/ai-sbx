@@ -1,0 +1,177 @@
+// sbx/internal/driver/podman.go
+package driver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/gustavocarvalho/sbx/internal/naming"
+)
+
+const defaultImage = "docker.io/library/alpine:3"
+
+type Podman struct {
+	bin     string
+	root    string
+	runroot string
+}
+
+func NewPodman(stateDir string) *Podman {
+	return &Podman{
+		bin:     "podman",
+		root:    filepath.Join(stateDir, "storage"),
+		runroot: filepath.Join(stateDir, "runroot"),
+	}
+}
+
+func (p *Podman) Name() string { return "podman" }
+
+func (p *Podman) baseArgs() []string {
+	return []string{"--root", p.root, "--runroot", p.runroot}
+}
+
+func (p *Podman) Preflight(ctx context.Context) error {
+	if _, err := exec.LookPath(p.bin); err != nil {
+		return CLIErrorLike("engine_missing",
+			"podman not found on PATH",
+			"install podman and ensure rootless is configured (/etc/subuid, /etc/subgid); on WSL2 set systemd=true in /etc/wsl.conf")
+	}
+	cmd := exec.CommandContext(ctx, p.bin, append(p.baseArgs(), "info", "--format", "{{.Host.Security.Rootless}}")...)
+	var errb strings.Builder
+	cmd.Stderr = &errb
+	out, err := cmd.Output()
+	if err != nil {
+		return CLIErrorLike("engine_broken",
+			"podman info failed: "+strings.TrimSpace(errb.String()),
+			"check rootless setup: `podman info`; ensure subuid/subgid ranges exist for your user")
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return CLIErrorLike("not_rootless",
+			"podman is not running rootless",
+			"this tool requires rootless podman for host isolation; do not run as root")
+	}
+	return nil
+}
+
+func (p *Podman) createArgs(name, session, image string) []string {
+	args := append(p.baseArgs(), "run", "-d",
+		"--name", name,
+		"--label", "sbx.session="+session,
+		"--label", "sbx.managed=true",
+		image, "sleep", "infinity")
+	return args
+}
+
+func (p *Podman) run(ctx context.Context, args []string) (string, string, error) {
+	cmd := exec.CommandContext(ctx, p.bin, args...)
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	return out.String(), errb.String(), err
+}
+
+func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (Env, error) {
+	if spec.ComposePath != "" {
+		return Env{}, DriverError{
+			Code:    "compose_unsupported",
+			Message: "compose (--from) is not supported by the podman driver yet",
+			Hint:    "compose support lands in M2; omit --from to create a single-container env",
+		}
+	}
+	image := defaultImage
+	if v := spec.Labels["image"]; v != "" {
+		image = v
+	}
+	// Sequence is derived from durable state (existing containers for this
+	// session), not process memory, so it survives across CLI invocations.
+	existing, err := p.List(ctx, sessionID)
+	if err != nil {
+		return Env{}, err // p.List already returns a DriverError
+	}
+	name := naming.EnvName(sessionID, len(existing)+1)
+	if _, errs, err := p.run(ctx, p.createArgs(name, sessionID, image)); err != nil {
+		return Env{}, DriverError{Code: "create_failed", Message: strings.TrimSpace(errs), Hint: "verify the image name and that rootless podman can pull it"}
+	}
+	return Env{ID: name, Name: name, Namespace: name, Status: "running"}, nil
+}
+
+func (p *Podman) Destroy(ctx context.Context, id string) error {
+	if _, errs, err := p.run(ctx, append(p.baseArgs(), "rm", "-f", id)); err != nil {
+		return DriverError{Code: "destroy_failed", Message: strings.TrimSpace(errs), Hint: "id may not exist; run `sbx env status --json`"}
+	}
+	return nil
+}
+
+type psRow struct {
+	Names  []string `json:"Names"`
+	State  string   `json:"State"`
+	Labels map[string]string
+}
+
+func (p *Podman) List(ctx context.Context, sessionID string) ([]Env, error) {
+	out, errs, err := p.run(ctx, append(p.baseArgs(), "ps", "-a", "--filter", "label=sbx.session="+sessionID, "--format", "json"))
+	if err != nil {
+		return nil, DriverError{Code: "list_failed", Message: strings.TrimSpace(errs)}
+	}
+	var rows []psRow
+	if strings.TrimSpace(out) != "" {
+		if err := json.Unmarshal([]byte(out), &rows); err != nil {
+			return nil, DriverError{Code: "parse_failed", Message: err.Error()}
+		}
+	}
+	var envs []Env
+	for _, r := range rows {
+		name := ""
+		if len(r.Names) > 0 {
+			name = r.Names[0]
+		}
+		envs = append(envs, Env{ID: name, Name: name, Namespace: name, Status: r.State})
+	}
+	return envs, nil
+}
+
+func (p *Podman) Status(ctx context.Context, id string) (Env, error) {
+	// M1: derive from List of all sessions is overkill; inspect by name.
+	out, errs, err := p.run(ctx, append(p.baseArgs(), "inspect", id, "--format", "{{.State.Status}}"))
+	if err != nil {
+		return Env{}, DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+	}
+	return Env{ID: id, Name: id, Namespace: id, Status: strings.TrimSpace(out)}, nil
+}
+
+func (p *Podman) Exec(ctx context.Context, id string, cmd []string) (ExecResult, error) {
+	args := append(p.baseArgs(), "exec", id)
+	args = append(args, cmd...)
+	c := exec.CommandContext(ctx, p.bin, args...)
+	var out, errb strings.Builder
+	c.Stdout, c.Stderr = &out, &errb
+	err := c.Run()
+	res := ExecResult{Stdout: out.String(), Stderr: errb.String()}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		res.ExitCode = ee.ExitCode()
+		return res, nil // non-zero exit is a valid result, not a driver error
+	}
+	if err != nil {
+		return ExecResult{}, DriverError{Code: "exec_failed", Message: strings.TrimSpace(errb.String()), Hint: "id may not exist or container not running"}
+	}
+	return res, nil
+}
+
+func (p *Podman) Logs(ctx context.Context, id string, opts LogOpts) (string, error) {
+	args := append(p.baseArgs(), "logs")
+	if opts.Tail > 0 {
+		args = append(args, "--tail", fmt.Sprintf("%d", opts.Tail))
+	}
+	args = append(args, id)
+	out, errs, err := p.run(ctx, args)
+	if err != nil {
+		return "", DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+	}
+	return out, nil
+}
