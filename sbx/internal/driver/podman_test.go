@@ -122,6 +122,30 @@ func TestFilterComposeProjects(t *testing.T) {
 	require.Equal(t, []string{"sbx-abcdefgh-001", "sbx-abcdefgh-002"}, got)
 }
 
+func TestParseInspectPorts(t *testing.T) {
+	raw := `{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"49153"}],"443/tcp":[{"HostIp":"0.0.0.0","HostPort":"49154"}]}`
+	ports := parseInspectPorts(raw)
+	require.Len(t, ports, 2)
+	// ordenado por porta do container
+	require.Equal(t, 80, ports[0].Container)
+	require.Equal(t, 49153, ports[0].Host)
+	require.Equal(t, 443, ports[1].Container)
+	require.Equal(t, 49154, ports[1].Host)
+}
+
+func TestParseInspectPortsEmpty(t *testing.T) {
+	require.Len(t, parseInspectPorts("null"), 0)
+	require.Len(t, parseInspectPorts(""), 0)
+	require.Len(t, parseInspectPorts("{}"), 0)
+}
+
+func TestPodmanCreateArgsPublishesDynamically(t *testing.T) {
+	p := NewPodman("/s")
+	joined := strings.Join(p.createArgs(containerSpec{name: "n", session: "s", namespace: "n", image: "nginx", publishAll: true}), " ")
+	require.Contains(t, joined, "-P")            // publica portas EXPOSTAS dinamicamente
+	require.NotContains(t, joined, "-p 0.0.0.0") // nunca porta fixa
+}
+
 func TestComposeSeqFormula(t *testing.T) {
 	// createCompose: seq = len(List singles) + len(compose projects) + 1
 	const sessionID = "abcdefghijkl"

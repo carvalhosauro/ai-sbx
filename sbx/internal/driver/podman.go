@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gustavocarvalho/sbx/internal/naming"
@@ -142,13 +143,14 @@ func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (En
 		return Env{}, DriverError{Code: "network_failed", Message: strings.TrimSpace(errs), Hint: "could not create the per-namespace network; check rootless networking (netavark/aardvark-dns)"}
 	}
 	cs := containerSpec{
-		name:      namespace,
-		session:   sessionID,
-		namespace: namespace,
-		image:     image,
-		network:   network,
-		extraNets: spec.Networks,
-		envVars:   spec.EnvVars,
+		name:       namespace,
+		session:    sessionID,
+		namespace:  namespace,
+		image:      image,
+		network:    network,
+		extraNets:  spec.Networks,
+		envVars:    spec.EnvVars,
+		publishAll: true, // portas EXPOSTAS publicadas em host-ports dinâmicos
 	}
 	if _, errs, err := p.run(ctx, p.createArgs(cs)); err != nil {
 		_, _, _ = p.run(ctx, p.networkRemoveArgs(network)) // rollback best-effort
@@ -319,13 +321,57 @@ func (p *Podman) destroyCompose(ctx context.Context, namespace string) error {
 	return nil
 }
 
+type inspectPortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+// parseInspectPorts turns podman's `.NetworkSettings.Ports` JSON into PortMaps.
+// Shape: {"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"49153"}], ...}. Pure.
+func parseInspectPorts(raw string) []PortMap {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	m := map[string][]inspectPortBinding{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	var out []PortMap
+	for key, binds := range m { // key ex.: "80/tcp"
+		cport := key
+		if i := strings.IndexByte(key, '/'); i >= 0 {
+			cport = key[:i]
+		}
+		cp, _ := strconv.Atoi(cport)
+		for _, b := range binds {
+			hp, _ := strconv.Atoi(b.HostPort)
+			if hp == 0 {
+				continue
+			}
+			out = append(out, PortMap{Container: cp, Host: hp})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Container < out[j].Container })
+	return out
+}
+
+func (p *Podman) readSinglePorts(ctx context.Context, id string) ([]PortMap, error) {
+	out, _, err := p.run(ctx, append(p.baseArgs(), "inspect", id, "--format", "{{json .NetworkSettings.Ports}}"))
+	if err != nil {
+		return nil, err
+	}
+	return parseInspectPorts(strings.TrimSpace(out)), nil
+}
+
 func (p *Podman) statusSingle(ctx context.Context, id string) (Env, error) {
 	out, errs, err := p.run(ctx, append(p.baseArgs(), "inspect", id, "--format", "{{.State.Status}}"))
 	if err != nil {
 		return Env{}, DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
 	}
-	// Portas são lidas de volta em 2.4.
-	return Env{ID: id, Name: id, Namespace: id, Status: strings.TrimSpace(out), Network: naming.Network(id)}, nil
+	env := Env{ID: id, Name: id, Namespace: id, Status: strings.TrimSpace(out), Network: naming.Network(id)}
+	env.Ports, _ = p.readSinglePorts(ctx, id)
+	return env, nil
 }
 
 func (p *Podman) composePS(ctx context.Context, namespace string) ([]composePSRow, error) {
@@ -350,8 +396,18 @@ func (p *Podman) statusCompose(ctx context.Context, namespace string) (Env, erro
 		if !strings.Contains(st, "run") && !strings.Contains(st, "up") {
 			env.Status = "degraded"
 		}
-		// portas por serviço são anexadas em 2.4 (readComposePorts)
+		for _, pub := range r.Publishers {
+			if pub.PublishedPort > 0 {
+				env.Ports = append(env.Ports, PortMap{Service: r.Service, Container: pub.TargetPort, Host: pub.PublishedPort})
+			}
+		}
 	}
+	sort.Slice(env.Ports, func(i, j int) bool {
+		if env.Ports[i].Service != env.Ports[j].Service {
+			return env.Ports[i].Service < env.Ports[j].Service
+		}
+		return env.Ports[i].Container < env.Ports[j].Container
+	})
 	return env, nil
 }
 
@@ -362,7 +418,12 @@ type psRow struct {
 }
 
 func (p *Podman) List(ctx context.Context, sessionID string) ([]Env, error) {
-	out, errs, err := p.run(ctx, append(p.baseArgs(), "ps", "-a", "--filter", "label=sbx.session="+sessionID, "--format", "json"))
+	// 1) single-container envs — carregam nossos labels sbx.*
+	out, errs, err := p.run(ctx, append(p.baseArgs(),
+		"ps", "-a",
+		"--filter", "label=sbx.session="+sessionID,
+		"--filter", "label=sbx.managed=true",
+		"--format", "json"))
 	if err != nil {
 		return nil, DriverError{Code: "list_failed", Message: strings.TrimSpace(errs)}
 	}
@@ -372,13 +433,33 @@ func (p *Podman) List(ctx context.Context, sessionID string) ([]Env, error) {
 			return nil, DriverError{Code: "parse_failed", Message: err.Error()}
 		}
 	}
+	seen := map[string]bool{}
 	var envs []Env
 	for _, r := range rows {
-		name := ""
-		if len(r.Names) > 0 {
+		ns := r.Labels["sbx.namespace"]
+		name := ns
+		if ns == "" && len(r.Names) > 0 { // fallback p/ containers legados de M1
 			name = r.Names[0]
+			ns = name
 		}
-		envs = append(envs, Env{ID: name, Name: name, Namespace: name, Status: r.State})
+		if ns == "" || seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		e := Env{ID: ns, Name: name, Namespace: ns, Status: r.State, Network: naming.Network(ns)}
+		e.Ports, _ = p.readSinglePorts(ctx, name)
+		envs = append(envs, e)
+	}
+	// 2) projetos compose desta sessão (um Env por projeto)
+	projects, _ := p.listComposeProjects(ctx, sessionID)
+	for _, ns := range projects {
+		if seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		if e, err := p.statusCompose(ctx, ns); err == nil {
+			envs = append(envs, e)
+		}
 	}
 	return envs, nil
 }

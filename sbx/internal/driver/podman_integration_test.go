@@ -203,3 +203,71 @@ func TestPodmanComposeLifecycleIntegration(t *testing.T) {
 	ids, _ := p.composeContainerIDs(ctx, e.ID)
 	require.Len(t, ids, 0, "compose teardown deve remover todos os containers do projeto")
 }
+
+func portForService(env Env, svc string) int {
+	for _, pm := range env.Ports {
+		if svc == "" || pm.Service == svc {
+			return pm.Host
+		}
+	}
+	return 0
+}
+
+func TestPodmanSingleDynamicPortsDistinctIntegration(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not installed")
+	}
+	ctx := context.Background()
+	p := newTestPodman(t)
+	require.NoError(t, p.Preflight(ctx))
+
+	img := EnvSpec{Labels: map[string]string{"image": "docker.io/library/nginx:alpine"}} // nginx EXPOSE 80
+	e1, err := p.Create(ctx, "itport", img)
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e1.ID)
+	e2, err := p.Create(ctx, "itport", img)
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e2.ID)
+
+	s1, err := p.Status(ctx, e1.ID)
+	require.NoError(t, err)
+	s2, err := p.Status(ctx, e2.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, s1.Ports, "nginx deve publicar 80 num host-port dinâmico")
+	require.NotEmpty(t, s2.Ports)
+	require.NotEqual(t, s1.Ports[0].Host, s2.Ports[0].Host, "dois envs → host-ports distintos")
+
+	// status --json (List) mostra os dois envs com portas
+	list, err := p.List(ctx, "itport")
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+}
+
+func TestPodmanComposeDynamicPortsDistinctIntegration(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not installed")
+	}
+	if !composeProviderAvailable() {
+		t.Skip("no podman compose provider installed")
+	}
+	ctx := context.Background()
+	p := newTestPodman(t)
+	require.NoError(t, p.Preflight(ctx))
+	wd, _ := os.Getwd()
+	compose := filepath.Join(wd, "..", "..", "testdata", "compose.min.yml")
+
+	e1, err := p.Create(ctx, "itcport", EnvSpec{ComposePath: compose})
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e1.ID)
+	e2, err := p.Create(ctx, "itcport", EnvSpec{ComposePath: compose})
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e2.ID)
+
+	s1, err := p.Status(ctx, e1.ID)
+	require.NoError(t, err)
+	s2, err := p.Status(ctx, e2.ID)
+	require.NoError(t, err)
+	require.NotZero(t, portForService(s1, "web"))
+	require.NotEqual(t, portForService(s1, "web"), portForService(s2, "web"),
+		"dois envs do MESMO compose devem receber host-ports diferentes")
+}
