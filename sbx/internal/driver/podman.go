@@ -143,7 +143,10 @@ func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (En
 	if err != nil {
 		return Env{}, err // p.List já retorna DriverError
 	}
-	namespace := naming.EnvName(sessionID, len(existing)+1)
+	namespace := spec.Name
+	if namespace == "" {
+		namespace = naming.EnvName(sessionID, len(existing)+1)
+	}
 	network := naming.Network(namespace)
 	if _, errs, err := p.run(ctx, p.networkCreateArgs(network)); err != nil {
 		return Env{}, DriverError{Code: "network_failed", Message: strings.TrimSpace(errs), Hint: "could not create the per-namespace network; check rootless networking (netavark/aardvark-dns)"}
@@ -283,7 +286,10 @@ func (p *Podman) createCompose(ctx context.Context, sessionID string, spec EnvSp
 	if err != nil {
 		return Env{}, err
 	}
-	namespace := naming.EnvName(sessionID, len(existing)+1)
+	namespace := spec.Name
+	if namespace == "" {
+		namespace = naming.EnvName(sessionID, len(existing)+1)
+	}
 	if _, errs, err := p.run(ctx, p.composeUpArgs(namespace, spec.ComposePath)); err != nil {
 		return Env{}, DriverError{Code: "compose_failed", Message: strings.TrimSpace(errs), Hint: "check the compose file is valid and that a `podman compose` provider (docker-compose or podman-compose) is installed"}
 	}

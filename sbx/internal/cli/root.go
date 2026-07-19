@@ -18,7 +18,7 @@ func NewRootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().Bool("json", false, "machine-readable JSON output")
 	root.PersistentFlags().String("session", "", "session id (defaults to $SBX_SESSION or a generated id)")
-	root.AddCommand(newEnvCmd())
+	root.AddCommand(newEnvCmd(), newSessionCmd())
 	return root
 }
 
