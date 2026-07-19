@@ -2,7 +2,6 @@
 package driver
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,11 +75,34 @@ func TestPodmanNetworkArgsShape(t *testing.T) {
 	require.Contains(t, strings.Join(p.networkCreateArgs("x"), " "), "--runroot")
 }
 
-func TestPodmanCreateRejectsCompose(t *testing.T) {
-	p := NewPodman(t.TempDir())
-	_, err := p.Create(context.Background(), "s", EnvSpec{ComposePath: "compose.yml"})
-	require.Error(t, err)
-	de, ok := err.(DriverError)
-	require.True(t, ok, "expected a DriverError, got %T", err)
-	require.Equal(t, "compose_unsupported", de.Code)
+func TestPodmanComposeUpArgsShape(t *testing.T) {
+	p := NewPodman("/s")
+	joined := strings.Join(p.composeUpArgs("sbx-abc-001", "/w/compose.yml"), " ")
+	require.Contains(t, joined, "compose -p sbx-abc-001 -f /w/compose.yml up -d")
+	require.Contains(t, joined, "--root") // ainda nos roots próprios
+}
+
+func TestParseComposePSArray(t *testing.T) {
+	raw := `[{"Name":"sbx-abc-001_web_1","Service":"web","State":"running","Publishers":[{"URL":"0.0.0.0","TargetPort":80,"PublishedPort":49153,"Protocol":"tcp"}]}]`
+	rows, err := parseComposePS(raw)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "web", rows[0].Service)
+	require.Equal(t, 49153, rows[0].Publishers[0].PublishedPort)
+	require.Equal(t, 80, rows[0].Publishers[0].TargetPort)
+}
+
+func TestParseComposePSNDJSON(t *testing.T) {
+	raw := "{\"Name\":\"a_web_1\",\"Service\":\"web\",\"State\":\"running\",\"Publishers\":[{\"TargetPort\":80,\"PublishedPort\":50001}]}\n" +
+		"{\"Name\":\"a_worker_1\",\"Service\":\"worker\",\"State\":\"running\",\"Publishers\":[]}\n"
+	rows, err := parseComposePS(raw)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	require.Equal(t, "worker", rows[1].Service)
+}
+
+func TestParseComposePSEmpty(t *testing.T) {
+	rows, err := parseComposePS("")
+	require.NoError(t, err)
+	require.Len(t, rows, 0)
 }

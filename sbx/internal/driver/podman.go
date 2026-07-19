@@ -16,6 +16,11 @@ import (
 
 const defaultImage = "docker.io/library/alpine:3"
 
+const (
+	composeProjectLabel = "com.docker.compose.project"
+	composeServiceLabel = "com.docker.compose.service"
+)
+
 type Podman struct {
 	bin     string
 	root    string
@@ -119,11 +124,7 @@ func (p *Podman) run(ctx context.Context, args []string) (string, string, error)
 
 func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (Env, error) {
 	if spec.ComposePath != "" {
-		return Env{}, DriverError{
-			Code:    "compose_unsupported",
-			Message: "compose (--from) is not supported by the podman driver yet",
-			Hint:    "compose support lands in Task 2.3; omit --from to create a single-container env",
-		}
+		return p.createCompose(ctx, sessionID, spec)
 	}
 	image := defaultImage
 	if v := spec.Labels["image"]; v != "" {
@@ -157,7 +158,10 @@ func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (En
 }
 
 func (p *Podman) Destroy(ctx context.Context, id string) error {
-	return p.destroySingle(ctx, id)
+	if p.containerExists(ctx, id) {
+		return p.destroySingle(ctx, id)
+	}
+	return p.destroyCompose(ctx, id)
 }
 
 func isNotFoundStderr(stderr string) bool {
@@ -172,6 +176,145 @@ func (p *Podman) destroySingle(ctx context.Context, id string) error {
 	// Remove a rede do namespace; ignora "not found" para Destroy ser idempotente.
 	_, _, _ = p.run(ctx, p.networkRemoveArgs(naming.Network(id)))
 	return nil
+}
+
+type composePublisher struct {
+	URL           string `json:"URL"`
+	TargetPort    int    `json:"TargetPort"`
+	PublishedPort int    `json:"PublishedPort"`
+	Protocol      string `json:"Protocol"`
+}
+
+type composePSRow struct {
+	Name       string             `json:"Name"`
+	Service    string             `json:"Service"`
+	State      string             `json:"State"`
+	Publishers []composePublisher `json:"Publishers"`
+}
+
+// parseComposePS tolerates both a JSON array (some providers) and
+// newline-delimited JSON objects (docker compose v2). Pure — unit tested.
+func parseComposePS(raw string) ([]composePSRow, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil, nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var rows []composePSRow
+		if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+			return nil, err
+		}
+		return rows, nil
+	}
+	var rows []composePSRow
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var r composePSRow
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			return nil, err
+		}
+		rows = append(rows, r)
+	}
+	return rows, nil
+}
+
+func (p *Podman) composeArgs(namespace string, rest ...string) []string {
+	args := append(p.baseArgs(), "compose", "-p", namespace)
+	return append(args, rest...)
+}
+
+func (p *Podman) composeUpArgs(namespace, file string) []string {
+	return p.composeArgs(namespace, "-f", file, "up", "-d")
+}
+
+func (p *Podman) containerExists(ctx context.Context, id string) bool {
+	_, _, err := p.run(ctx, append(p.baseArgs(), "container", "exists", id))
+	return err == nil
+}
+
+func (p *Podman) createCompose(ctx context.Context, sessionID string, spec EnvSpec) (Env, error) {
+	existing, err := p.List(ctx, sessionID)
+	if err != nil {
+		return Env{}, err
+	}
+	namespace := naming.EnvName(sessionID, len(existing)+1)
+	if _, errs, err := p.run(ctx, p.composeUpArgs(namespace, spec.ComposePath)); err != nil {
+		return Env{}, DriverError{Code: "compose_failed", Message: strings.TrimSpace(errs), Hint: "check the compose file is valid and that a `podman compose` provider (docker-compose or podman-compose) is installed"}
+	}
+	// Portas são populadas em statusCompose (Task 2.4 lê de volta os host-ports).
+	return Env{ID: namespace, Name: namespace, Namespace: namespace, Project: namespace, Status: "running", Network: namespace + "_default"}, nil
+}
+
+func (p *Podman) composeContainerIDs(ctx context.Context, namespace string) ([]string, error) {
+	out, _, err := p.run(ctx, append(p.baseArgs(), "ps", "-aq", "--filter", "label="+composeProjectLabel+"="+namespace))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.TrimSpace(out)), nil
+}
+
+func (p *Podman) composeVolumeNames(ctx context.Context, namespace string) ([]string, error) {
+	out, _, err := p.run(ctx, append(p.baseArgs(), "volume", "ls", "-q", "--filter", "label="+composeProjectLabel+"="+namespace))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.TrimSpace(out)), nil
+}
+
+// destroyCompose tears a project down by its compose project label, so it does
+// NOT need the original compose file at destroy time.
+func (p *Podman) destroyCompose(ctx context.Context, namespace string) error {
+	ids, _ := p.composeContainerIDs(ctx, namespace)
+	for _, id := range ids {
+		_, _, _ = p.run(ctx, append(p.baseArgs(), "rm", "-f", id))
+	}
+	// compose cria uma rede default "<project>_default"
+	// ⚠️ CONFIRMAR EM RUNTIME: nome da rede default "<project>_default"
+	_, _, _ = p.run(ctx, p.networkRemoveArgs(namespace+"_default"))
+	vols, _ := p.composeVolumeNames(ctx, namespace)
+	for _, v := range vols {
+		_, _, _ = p.run(ctx, append(p.baseArgs(), "volume", "rm", v))
+	}
+	if len(ids) == 0 {
+		return DriverError{Code: "not_found", Message: "no environment named " + namespace, Hint: "run `sbx env status --json` to list ids"}
+	}
+	return nil
+}
+
+func (p *Podman) statusSingle(ctx context.Context, id string) (Env, error) {
+	out, errs, err := p.run(ctx, append(p.baseArgs(), "inspect", id, "--format", "{{.State.Status}}"))
+	if err != nil {
+		return Env{}, DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+	}
+	// Portas são lidas de volta em 2.4.
+	return Env{ID: id, Name: id, Namespace: id, Status: strings.TrimSpace(out), Network: naming.Network(id)}, nil
+}
+
+func (p *Podman) composePS(ctx context.Context, namespace string) ([]composePSRow, error) {
+	out, errs, err := p.run(ctx, p.composeArgs(namespace, "ps", "--format", "json"))
+	if err != nil {
+		return nil, fmt.Errorf("%s", strings.TrimSpace(errs))
+	}
+	return parseComposePS(out)
+}
+
+func (p *Podman) statusCompose(ctx context.Context, namespace string) (Env, error) {
+	rows, err := p.composePS(ctx, namespace)
+	if err != nil || len(rows) == 0 {
+		return Env{}, DriverError{Code: "not_found", Message: "no environment named " + namespace, Hint: "run `sbx env status --json` to list ids"}
+	}
+	env := Env{ID: namespace, Name: namespace, Namespace: namespace, Project: namespace, Network: namespace + "_default", Status: "running"}
+	for _, r := range rows {
+		st := strings.ToLower(r.State)
+		if !strings.Contains(st, "run") && !strings.Contains(st, "up") {
+			env.Status = "degraded"
+		}
+		// portas por serviço são anexadas em 2.4 (readComposePorts)
+	}
+	return env, nil
 }
 
 type psRow struct {
@@ -203,12 +346,10 @@ func (p *Podman) List(ctx context.Context, sessionID string) ([]Env, error) {
 }
 
 func (p *Podman) Status(ctx context.Context, id string) (Env, error) {
-	// M1: derive from List of all sessions is overkill; inspect by name.
-	out, errs, err := p.run(ctx, append(p.baseArgs(), "inspect", id, "--format", "{{.State.Status}}"))
-	if err != nil {
-		return Env{}, DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+	if p.containerExists(ctx, id) {
+		return p.statusSingle(ctx, id)
 	}
-	return Env{ID: id, Name: id, Namespace: id, Status: strings.TrimSpace(out)}, nil
+	return p.statusCompose(ctx, id)
 }
 
 func (p *Podman) Exec(ctx context.Context, id string, cmd []string) (ExecResult, error) {
@@ -231,14 +372,44 @@ func (p *Podman) Exec(ctx context.Context, id string, cmd []string) (ExecResult,
 }
 
 func (p *Podman) Logs(ctx context.Context, id string, opts LogOpts) (string, error) {
-	args := append(p.baseArgs(), "logs")
-	if opts.Tail > 0 {
-		args = append(args, "--tail", fmt.Sprintf("%d", opts.Tail))
+	if opts.Service == "" && p.containerExists(ctx, id) {
+		args := append(p.baseArgs(), "logs")
+		if opts.Tail > 0 {
+			args = append(args, "--tail", fmt.Sprintf("%d", opts.Tail))
+		}
+		args = append(args, id)
+		out, errs, err := p.run(ctx, args)
+		if err != nil {
+			return "", DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+		}
+		return out, nil
 	}
-	args = append(args, id)
-	out, errs, err := p.run(ctx, args)
+	// Compose: resolve os containers do projeto (+ serviço) por label, e usa
+	// `podman logs` direto — file-independent.
+	psArgs := append(p.baseArgs(), "ps", "-aq", "--filter", "label="+composeProjectLabel+"="+id)
+	if opts.Service != "" {
+		psArgs = append(psArgs, "--filter", "label="+composeServiceLabel+"="+opts.Service)
+	}
+	out, errs, err := p.run(ctx, psArgs)
 	if err != nil {
-		return "", DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status` to list ids"}
+		return "", DriverError{Code: "not_found", Message: strings.TrimSpace(errs), Hint: "run `sbx env status --json` to list ids/services"}
 	}
-	return out, nil
+	cids := strings.Fields(strings.TrimSpace(out))
+	if len(cids) == 0 {
+		return "", DriverError{Code: "not_found", Message: "no matching service for " + id, Hint: "run `sbx env status --json` to list ids/services"}
+	}
+	var buf strings.Builder
+	for _, cid := range cids {
+		largs := append(p.baseArgs(), "logs")
+		if opts.Tail > 0 {
+			largs = append(largs, "--tail", fmt.Sprintf("%d", opts.Tail))
+		}
+		largs = append(largs, cid)
+		lout, _, lerr := p.run(ctx, largs)
+		if lerr != nil {
+			continue
+		}
+		buf.WriteString(lout)
+	}
+	return buf.String(), nil
 }

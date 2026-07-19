@@ -8,12 +8,23 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gustavocarvalho/sbx/internal/naming"
 	"github.com/stretchr/testify/require"
 )
+
+func composeProviderAvailable() bool {
+	if _, err := exec.LookPath("docker-compose"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("podman-compose"); err == nil {
+		return true
+	}
+	return false
+}
 
 func newTestPodman(t *testing.T) *Podman {
 	t.Helper()
@@ -156,4 +167,36 @@ func TestPodmanNetworkPerNamespaceIntegration(t *testing.T) {
 	_, hasOther := nets1[e2.Network]
 	require.True(t, has1, "env1 deve estar na sua própria rede %s", e1.Network)
 	require.False(t, hasOther, "env1 NÃO pode estar na rede do env2 %s", e2.Network)
+}
+
+func TestPodmanComposeLifecycleIntegration(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not installed")
+	}
+	if !composeProviderAvailable() {
+		t.Skip("no podman compose provider (docker-compose/podman-compose) installed")
+	}
+	ctx := context.Background()
+	p := newTestPodman(t)
+	require.NoError(t, p.Preflight(ctx))
+
+	wd, _ := os.Getwd()
+	compose := filepath.Join(wd, "..", "..", "testdata", "compose.min.yml")
+
+	e, err := p.Create(ctx, "itcomp1", EnvSpec{ComposePath: compose})
+	require.NoError(t, err)
+	require.Equal(t, e.Namespace, e.Project) // project == namespace
+	defer p.Destroy(ctx, e.ID)
+
+	st, err := p.Status(ctx, e.ID)
+	require.NoError(t, err)
+	require.Equal(t, "running", st.Status)
+
+	// logs de um único serviço não devem falhar
+	_, err = p.Logs(ctx, e.ID, LogOpts{Service: "web"})
+	require.NoError(t, err)
+
+	require.NoError(t, p.Destroy(ctx, e.ID))
+	ids, _ := p.composeContainerIDs(ctx, e.ID)
+	require.Len(t, ids, 0, "compose teardown deve remover todos os containers do projeto")
 }
