@@ -59,7 +59,8 @@ func TestNetpolicyEgressAllowlistIntegration(t *testing.T) {
 	e, err := p.Create(ctx, "itnp01", EnvSpec{EnvVars: netpolicy.ProxyEnv(proxy.Addr())})
 	if err != nil {
 		msg := err.Error()
-		if strings.Contains(msg, "permission denied") || strings.Contains(msg, "runc") || strings.Contains(msg, "OCI") {
+		if strings.Contains(msg, "mkdir /run/runc") ||
+			(strings.Contains(msg, "permission denied") && strings.Contains(msg, "runc")) {
 			t.Skipf("podman engine/runtime unavailable: %v", err)
 		}
 		require.NoError(t, err)

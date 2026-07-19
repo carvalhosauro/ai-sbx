@@ -62,10 +62,18 @@ func TestLoadAllowDedupsRepeats(t *testing.T) {
 // A allowlist carregada deve realmente governar o proxy: prova a integração
 // entre 3.2 e 3.1 sem sair da máquina.
 func TestLoadedAllowGovernsProxyMatch(t *testing.T) {
-	p, err := StartProxy(DefaultAllow())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sbx.allow")
+	require.NoError(t, os.WriteFile(path, []byte("internal.example.com\n"), 0o644))
+
+	got, err := LoadAllow(path)
+	require.NoError(t, err)
+
+	p, err := StartProxy(got)
 	require.NoError(t, err)
 	defer p.Stop()
-	require.True(t, p.allowed("api.anthropic.com:443"))
-	require.True(t, p.allowed("archive.ubuntu.com:443"))
-	require.False(t, p.allowed("prod.internal.example.com:443"))
+
+	require.True(t, p.allowed("api.anthropic.com:443"))    // default preservado após merge
+	require.True(t, p.allowed("internal.example.com:443")) // domínio do sbx.allow
+	require.False(t, p.allowed("prod.evil.example:443"))   // não listado → negado
 }
