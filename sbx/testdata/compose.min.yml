@@ -1,0 +1,13 @@
+# sbx/testdata/compose.min.yml
+# Minimal compose used by integration tests. `web` publishes container port 80
+# to a DYNAMIC host port (short "80" form, no fixed host port) so we can read it
+# back; `worker` has no published port. Never hardcode a host port here — the
+# security invariant is dynamic-only.
+services:
+  web:
+    image: docker.io/library/nginx:alpine
+    ports:
+      - "80"
+  worker:
+    image: docker.io/library/alpine:3
+    command: ["sleep", "infinity"]

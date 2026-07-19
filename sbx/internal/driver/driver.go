@@ -6,6 +6,8 @@ import "context"
 type EnvSpec struct {
 	ComposePath string
 	Labels      map[string]string
+	EnvVars     map[string]string // env vars injetadas nos containers (usado por M3)
+	Networks    []string          // redes extras a anexar (usado por M3)
 }
 
 type PortMap struct {
@@ -19,6 +21,8 @@ type Env struct {
 	Name      string    `json:"name"`
 	Namespace string    `json:"namespace"`
 	Status    string    `json:"status"`
+	Network   string    `json:"network,omitempty"`
+	Project   string    `json:"project,omitempty"`
 	Ports     []PortMap `json:"ports"`
 }
 

@@ -62,6 +62,30 @@ func TestEnvDestroyAll(t *testing.T) {
 	require.Contains(t, out, "[]")
 }
 
+func TestEnvCreateRespectsMaxEnvs(t *testing.T) {
+	t.Setenv("SBX_MAX_ENVS", "2")
+	d := driver.NewFake()
+	_, err := run(t, d, "--session", "lim", "env", "create")
+	require.NoError(t, err)
+	_, err = run(t, d, "--session", "lim", "env", "create")
+	require.NoError(t, err)
+
+	out, err := run(t, d, "--json", "--session", "lim", "env", "create")
+	require.Error(t, err)
+	require.Contains(t, out, "limit_exceeded")
+	require.Contains(t, out, "hint")
+}
+
+func TestEnvCreateDefaultLimitAllowsSeveral(t *testing.T) {
+	d := driver.NewFake() // default 8
+	for i := 0; i < 8; i++ {
+		_, err := run(t, d, "--session", "def", "env", "create")
+		require.NoError(t, err)
+	}
+	_, err := run(t, d, "--json", "--session", "def", "env", "create")
+	require.Error(t, err) // 9º excede o default
+}
+
 func firstField(s string) string {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\t' || s[i] == '\n' || s[i] == ' ' {

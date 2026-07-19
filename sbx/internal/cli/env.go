@@ -2,7 +2,9 @@
 package cli
 
 import (
+	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/gustavocarvalho/sbx/internal/driver"
 	"github.com/spf13/cobra"
@@ -71,6 +73,18 @@ func renderErrorsOnReturn(c *cobra.Command) {
 	}
 }
 
+// maxEnvs is the per-session cap on live environments. Enforced in the CLI
+// (create path), not the driver, so the agent-facing contract never leaks the
+// backend. Default 8; override with SBX_MAX_ENVS.
+func maxEnvs() int {
+	if v := os.Getenv("SBX_MAX_ENVS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 8
+}
+
 func newCreateCmd() *cobra.Command {
 	var from string
 	c := &cobra.Command{
@@ -78,6 +92,17 @@ func newCreateCmd() *cobra.Command {
 		Short: "Create a new ephemeral environment (optionally from a compose file)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			d := depsFrom(cmd)
+			existing, err := d.drv.List(cmd.Context(), d.session)
+			if err != nil {
+				return CLIError{Code: "list_failed", Message: err.Error(), Hint: "the engine may be unavailable; run `sbx env status`"}
+			}
+			if limit := maxEnvs(); len(existing) >= limit {
+				return CLIError{
+					Code:    "limit_exceeded",
+					Message: fmt.Sprintf("session already has %d environment(s) (limit %d)", len(existing), limit),
+					Hint:    "destroy one with `sbx env destroy <id>` (or `--all`), or raise SBX_MAX_ENVS",
+				}
+			}
 			e, err := d.drv.Create(cmd.Context(), d.session, driver.EnvSpec{ComposePath: from})
 			if err != nil {
 				return CLIError{Code: "create_failed", Message: err.Error(), Hint: "check the compose file path and that the engine is available"}
