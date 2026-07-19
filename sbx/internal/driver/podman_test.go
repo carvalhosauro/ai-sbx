@@ -147,11 +147,15 @@ func TestPodmanCreateArgsPublishesDynamically(t *testing.T) {
 }
 
 func TestComposeSeqFormula(t *testing.T) {
-	// createCompose: seq = len(List singles) + len(compose projects) + 1
+	// createCompose and Create (single) share the same seq formula:
+	// seq = len(List) + 1, where List already includes singles and compose projects.
 	const sessionID = "abcdefghijkl"
-	existingCount := 1
-	projects := []string{"sbx-abcdefgh-001", "sbx-abcdefgh-002"}
-	seq := existingCount + len(projects) + 1
+	existing := []Env{
+		{ID: "sbx-abcdefgh-001"}, // single
+		{ID: "sbx-abcdefgh-002"}, // compose project
+		{ID: "sbx-abcdefgh-003"}, // compose project
+	}
+	seq := len(existing) + 1
 	require.Equal(t, 4, seq)
 	require.Equal(t, "sbx-abcdefgh-004", naming.EnvName(sessionID, seq))
 }

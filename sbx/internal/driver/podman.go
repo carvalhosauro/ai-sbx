@@ -276,11 +276,7 @@ func (p *Podman) createCompose(ctx context.Context, sessionID string, spec EnvSp
 	if err != nil {
 		return Env{}, err
 	}
-	projects, err := p.listComposeProjects(ctx, sessionID)
-	if err != nil {
-		return Env{}, DriverError{Code: "list_failed", Message: strings.TrimSpace(err.Error()), Hint: "could not list compose projects for session sequencing"}
-	}
-	namespace := naming.EnvName(sessionID, len(existing)+len(projects)+1)
+	namespace := naming.EnvName(sessionID, len(existing)+1)
 	if _, errs, err := p.run(ctx, p.composeUpArgs(namespace, spec.ComposePath)); err != nil {
 		return Env{}, DriverError{Code: "compose_failed", Message: strings.TrimSpace(errs), Hint: "check the compose file is valid and that a `podman compose` provider (docker-compose or podman-compose) is installed"}
 	}

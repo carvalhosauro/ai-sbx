@@ -241,6 +241,9 @@ func TestPodmanSingleDynamicPortsDistinctIntegration(t *testing.T) {
 	list, err := p.List(ctx, "itport")
 	require.NoError(t, err)
 	require.Len(t, list, 2)
+	for _, e := range list {
+		require.NotEmpty(t, e.Ports, "List deve incluir host-ports dinâmicos por env")
+	}
 }
 
 func TestPodmanComposeDynamicPortsDistinctIntegration(t *testing.T) {
