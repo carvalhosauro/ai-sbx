@@ -5,10 +5,13 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
+	"github.com/gustavocarvalho/sbx/internal/naming"
 	"github.com/stretchr/testify/require"
 )
 
@@ -117,4 +120,40 @@ func TestPodmanMultiEnvPerSessionIntegration(t *testing.T) {
 	list, err = p.List(ctx, "itest03")
 	require.NoError(t, err)
 	require.Len(t, list, 0)
+}
+
+func inspectNetworks(t *testing.T, p *Podman, id string) map[string]any {
+	t.Helper()
+	out, _, err := p.run(context.Background(), append(p.baseArgs(), "inspect", id, "--format", "{{json .NetworkSettings.Networks}}"))
+	require.NoError(t, err)
+	m := map[string]any{}
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &m))
+	return m
+}
+
+func TestPodmanNetworkPerNamespaceIntegration(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not installed")
+	}
+	ctx := context.Background()
+	p := newTestPodman(t)
+	require.NoError(t, p.Preflight(ctx))
+
+	e1, err := p.Create(ctx, "itnet01", EnvSpec{})
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e1.ID)
+	e2, err := p.Create(ctx, "itnet01", EnvSpec{})
+	require.NoError(t, err)
+	defer p.Destroy(ctx, e2.ID)
+
+	// nomes de rede distintos e determinísticos por namespace
+	require.NotEqual(t, e1.Network, e2.Network)
+	require.Equal(t, naming.Network(e1.Namespace), e1.Network)
+
+	// cada container está anexado SOMENTE à sua própria rede — não enxerga a do outro
+	nets1 := inspectNetworks(t, p, e1.ID)
+	_, has1 := nets1[e1.Network]
+	_, hasOther := nets1[e2.Network]
+	require.True(t, has1, "env1 deve estar na sua própria rede %s", e1.Network)
+	require.False(t, hasOther, "env1 NÃO pode estar na rede do env2 %s", e2.Network)
 }

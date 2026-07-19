@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gustavocarvalho/sbx/internal/naming"
@@ -58,13 +59,54 @@ func (p *Podman) Preflight(ctx context.Context) error {
 	return nil
 }
 
-func (p *Podman) createArgs(name, session, image string) []string {
+type containerSpec struct {
+	name       string
+	session    string
+	namespace  string
+	image      string
+	network    string
+	extraNets  []string
+	envVars    map[string]string
+	publishAll bool
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (p *Podman) createArgs(cs containerSpec) []string {
 	args := append(p.baseArgs(), "run", "-d",
-		"--name", name,
-		"--label", "sbx.session="+session,
-		"--label", "sbx.managed=true",
-		image, "sleep", "infinity")
+		"--name", cs.name,
+		"--label", "sbx.session="+cs.session,
+		"--label", "sbx.namespace="+cs.namespace,
+		"--label", "sbx.managed=true")
+	if cs.network != "" {
+		args = append(args, "--network", cs.network)
+	}
+	for _, n := range cs.extraNets {
+		args = append(args, "--network", n)
+	}
+	for _, k := range sortedKeys(cs.envVars) { // sorted → argv determinístico
+		args = append(args, "--env", k+"="+cs.envVars[k])
+	}
+	if cs.publishAll {
+		args = append(args, "-P") // publica portas EXPOSTAS em host-ports dinâmicos
+	}
+	args = append(args, cs.image, "sleep", "infinity")
 	return args
+}
+
+func (p *Podman) networkCreateArgs(net string) []string {
+	return append(p.baseArgs(), "network", "create", net)
+}
+
+func (p *Podman) networkRemoveArgs(net string) []string {
+	return append(p.baseArgs(), "network", "rm", net)
 }
 
 func (p *Podman) run(ctx context.Context, args []string) (string, string, error) {
@@ -80,30 +122,50 @@ func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (En
 		return Env{}, DriverError{
 			Code:    "compose_unsupported",
 			Message: "compose (--from) is not supported by the podman driver yet",
-			Hint:    "compose support lands in M2; omit --from to create a single-container env",
+			Hint:    "compose support lands in Task 2.3; omit --from to create a single-container env",
 		}
 	}
 	image := defaultImage
 	if v := spec.Labels["image"]; v != "" {
 		image = v
 	}
-	// Sequence is derived from durable state (existing containers for this
-	// session), not process memory, so it survives across CLI invocations.
+	// Sequência derivada de estado durável (containers existentes da sessão),
+	// não de memória de processo — sobrevive entre invocações da CLI.
 	existing, err := p.List(ctx, sessionID)
 	if err != nil {
-		return Env{}, err // p.List already returns a DriverError
+		return Env{}, err // p.List já retorna DriverError
 	}
-	name := naming.EnvName(sessionID, len(existing)+1)
-	if _, errs, err := p.run(ctx, p.createArgs(name, sessionID, image)); err != nil {
+	namespace := naming.EnvName(sessionID, len(existing)+1)
+	network := naming.Network(namespace)
+	if _, errs, err := p.run(ctx, p.networkCreateArgs(network)); err != nil {
+		return Env{}, DriverError{Code: "network_failed", Message: strings.TrimSpace(errs), Hint: "could not create the per-namespace network; check rootless networking (netavark/aardvark-dns)"}
+	}
+	cs := containerSpec{
+		name:      namespace,
+		session:   sessionID,
+		namespace: namespace,
+		image:     image,
+		network:   network,
+		extraNets: spec.Networks,
+		envVars:   spec.EnvVars,
+	}
+	if _, errs, err := p.run(ctx, p.createArgs(cs)); err != nil {
+		_, _, _ = p.run(ctx, p.networkRemoveArgs(network)) // rollback best-effort
 		return Env{}, DriverError{Code: "create_failed", Message: strings.TrimSpace(errs), Hint: "verify the image name and that rootless podman can pull it"}
 	}
-	return Env{ID: name, Name: name, Namespace: name, Status: "running"}, nil
+	return Env{ID: namespace, Name: namespace, Namespace: namespace, Status: "running", Network: network}, nil
 }
 
 func (p *Podman) Destroy(ctx context.Context, id string) error {
+	return p.destroySingle(ctx, id)
+}
+
+func (p *Podman) destroySingle(ctx context.Context, id string) error {
 	if _, errs, err := p.run(ctx, append(p.baseArgs(), "rm", "-f", id)); err != nil {
 		return DriverError{Code: "destroy_failed", Message: strings.TrimSpace(errs), Hint: "id may not exist; run `sbx env status --json`"}
 	}
+	// Remove a rede do namespace; ignora "not found" para Destroy ser idempotente.
+	_, _, _ = p.run(ctx, p.networkRemoveArgs(naming.Network(id)))
 	return nil
 }
 
