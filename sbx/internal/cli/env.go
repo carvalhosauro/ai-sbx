@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/gustavocarvalho/sbx/internal/driver"
+	"github.com/gustavocarvalho/sbx/internal/naming"
+	"github.com/gustavocarvalho/sbx/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -103,10 +105,24 @@ func newCreateCmd() *cobra.Command {
 					Hint:    "destroy one with `sbx env destroy <id>` (or `--all`), or raise SBX_MAX_ENVS",
 				}
 			}
-			e, err := d.drv.Create(cmd.Context(), d.session, driver.EnvSpec{ComposePath: from})
+			reg, err := session.OpenRegistry(d.session)
+			if err != nil {
+				return err
+			}
+			seq, err := reg.NextSeq()
+			if err != nil {
+				return err
+			}
+			name := naming.EnvName(d.session, seq)
+			spec := driver.EnvSpec{ComposePath: from, Name: name}
+			e, err := d.drv.Create(cmd.Context(), d.session, spec)
 			if err != nil {
 				return CLIError{Code: "create_failed", Message: err.Error(), Hint: "check the compose file path and that the engine is available"}
 			}
+			_ = reg.Add(session.EnvRecord{
+				ID: e.ID, Name: e.Name, Namespace: e.Namespace,
+				Network: e.Network, Project: e.Project,
+			})
 			return printerFor(cmd, d).Env(e)
 		},
 	}
@@ -191,14 +207,8 @@ func newDestroyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d := depsFrom(cmd)
 			if all {
-				list, err := d.drv.List(cmd.Context(), d.session)
-				if err != nil {
-					return CLIError{Code: "list_failed", Message: err.Error()}
-				}
-				for _, e := range list {
-					if err := d.drv.Destroy(cmd.Context(), e.ID); err != nil {
-						return CLIError{Code: "destroy_failed", Message: err.Error()}
-					}
+				if err := session.DestroyAll(cmd.Context(), d.drv, d.session); err != nil {
+					return err
 				}
 				return nil
 			}
@@ -208,6 +218,11 @@ func newDestroyCmd() *cobra.Command {
 			if err := d.drv.Destroy(cmd.Context(), args[0]); err != nil {
 				return CLIError{Code: "not_found", Message: err.Error(), Hint: "run `sbx env status --json` to list ids"}
 			}
+			reg, err := session.OpenRegistry(d.session)
+			if err != nil {
+				return err
+			}
+			_ = reg.Remove(args[0])
 			return nil
 		},
 	}

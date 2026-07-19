@@ -4,9 +4,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/gustavocarvalho/sbx/internal/driver"
+	"github.com/gustavocarvalho/sbx/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,6 +86,31 @@ func TestEnvCreateDefaultLimitAllowsSeveral(t *testing.T) {
 	}
 	_, err := run(t, d, "--json", "--session", "def", "env", "create")
 	require.Error(t, err) // 9º excede o default
+}
+
+func TestCreateRegistersInSessionRegistry(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	d := driver.NewFake()
+	out, err := run(t, d, "--json", "--session", "sess1", "env", "create")
+	require.NoError(t, err)
+	require.Contains(t, out, `"id"`)
+
+	r, err := session.OpenRegistry("sess1")
+	require.NoError(t, err)
+	require.Len(t, r.List(), 1)
+}
+
+func TestDestroyAllIdempotentViaCLI(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	d := driver.NewFake()
+	_, _ = run(t, d, "--session", "s", "env", "create")
+	_, _ = run(t, d, "--session", "s", "env", "create")
+	_, err := run(t, d, "--session", "s", "env", "destroy", "--all")
+	require.NoError(t, err)
+	_, err = run(t, d, "--session", "s", "env", "destroy", "--all")
+	require.NoError(t, err)
+	out, _ := run(t, d, "--json", "--session", "s", "env", "status")
+	require.True(t, out == "[]\n" || out == "[]" || strings.Contains(out, "[]"))
 }
 
 func firstField(s string) string {

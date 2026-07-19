@@ -8,6 +8,7 @@ type EnvSpec struct {
 	Labels      map[string]string
 	EnvVars     map[string]string // env vars injetadas nos containers (usado por M3)
 	Networks    []string          // redes extras a anexar (usado por M3)
+	Name        string            // optional explicit container/project name
 }
 
 type PortMap struct {

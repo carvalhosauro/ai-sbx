@@ -23,19 +23,26 @@ func NewFake() *Fake { return &Fake{envs: map[string]envRec{}} }
 
 func (f *Fake) Name() string { return "fake" }
 
-func (f *Fake) Create(_ context.Context, sessionID string, _ EnvSpec) (Env, error) {
+func (f *Fake) Create(_ context.Context, sessionID string, spec EnvSpec) (Env, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.seq++
-	id := fmt.Sprintf("env%03d", f.seq)
-	short := sessionID
-	if len(short) > 5 {
-		short = short[:5]
+	var id, name string
+	if spec.Name != "" {
+		id = spec.Name
+		name = spec.Name
+	} else {
+		f.seq++
+		id = fmt.Sprintf("env%03d", f.seq)
+		short := sessionID
+		if len(short) > 5 {
+			short = short[:5]
+		}
+		name = "sbx-" + short + "-" + id
 	}
 	e := Env{
 		ID:        id,
-		Name:      "sbx-" + short + "-" + id,
-		Namespace: "sbx-" + short + "-" + id,
+		Name:      name,
+		Namespace: name,
 		Status:    "running",
 		Ports:     nil,
 	}
