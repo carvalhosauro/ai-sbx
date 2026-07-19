@@ -31,6 +31,7 @@ func newTestPodman(t *testing.T) (*driver.Podman, string) {
 }
 
 func TestReconcileRemovesOrphanAfterKill(t *testing.T) {
+	withStateHome(t)
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("podman not installed")
 	}
