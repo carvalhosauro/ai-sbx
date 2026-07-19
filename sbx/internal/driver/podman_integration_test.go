@@ -23,6 +23,9 @@ func composeProviderAvailable() bool {
 	if _, err := exec.LookPath("podman-compose"); err == nil {
 		return true
 	}
+	if exec.Command("podman", "compose", "version").Run() == nil {
+		return true
+	}
 	return false
 }
 

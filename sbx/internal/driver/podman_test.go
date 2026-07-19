@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gustavocarvalho/sbx/internal/naming"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,4 +106,28 @@ func TestParseComposePSEmpty(t *testing.T) {
 	rows, err := parseComposePS("")
 	require.NoError(t, err)
 	require.Len(t, rows, 0)
+}
+
+func TestFilterComposeProjects(t *testing.T) {
+	sessionID := "abcdefghijkl"
+	prefix := composeProjectPrefix(sessionID)
+	rows := []psRow{
+		{Labels: map[string]string{composeProjectLabel: "sbx-abcdefgh-001"}},
+		{Labels: map[string]string{composeProjectLabel: "sbx-abcdefgh-001"}},
+		{Labels: map[string]string{composeProjectLabel: "sbx-abcdefgh-002"}},
+		{Labels: map[string]string{composeProjectLabel: "other-project"}},
+		{Labels: map[string]string{}},
+	}
+	got := filterComposeProjects(rows, prefix)
+	require.Equal(t, []string{"sbx-abcdefgh-001", "sbx-abcdefgh-002"}, got)
+}
+
+func TestComposeSeqFormula(t *testing.T) {
+	// createCompose: seq = len(List singles) + len(compose projects) + 1
+	const sessionID = "abcdefghijkl"
+	existingCount := 1
+	projects := []string{"sbx-abcdefgh-001", "sbx-abcdefgh-002"}
+	seq := existingCount + len(projects) + 1
+	require.Equal(t, 4, seq)
+	require.Equal(t, "sbx-abcdefgh-004", naming.EnvName(sessionID, seq))
 }

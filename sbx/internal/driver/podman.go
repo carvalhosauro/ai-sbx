@@ -235,12 +235,50 @@ func (p *Podman) containerExists(ctx context.Context, id string) bool {
 	return err == nil
 }
 
+func composeProjectPrefix(sessionID string) string {
+	return "sbx-" + naming.Short(sessionID, 8) + "-"
+}
+
+// filterComposeProjects returns distinct compose project names from ps rows
+// that belong to the session (project name prefix sbx-<session8>-). Pure — unit tested.
+func filterComposeProjects(rows []psRow, prefix string) []string {
+	seen := map[string]bool{}
+	var projects []string
+	for _, r := range rows {
+		proj := r.Labels[composeProjectLabel]
+		if proj == "" || !strings.HasPrefix(proj, prefix) || seen[proj] {
+			continue
+		}
+		seen[proj] = true
+		projects = append(projects, proj)
+	}
+	return projects
+}
+
+// listComposeProjects enumerates distinct compose projects that belong to this
+// session (project name carries the session prefix sbx-<session8>-).
+func (p *Podman) listComposeProjects(ctx context.Context, sessionID string) ([]string, error) {
+	out, _, err := p.run(ctx, append(p.baseArgs(), "ps", "-a", "--filter", "label="+composeProjectLabel, "--format", "json"))
+	if err != nil {
+		return nil, err
+	}
+	var rows []psRow
+	if strings.TrimSpace(out) != "" {
+		_ = json.Unmarshal([]byte(out), &rows)
+	}
+	return filterComposeProjects(rows, composeProjectPrefix(sessionID)), nil
+}
+
 func (p *Podman) createCompose(ctx context.Context, sessionID string, spec EnvSpec) (Env, error) {
 	existing, err := p.List(ctx, sessionID)
 	if err != nil {
 		return Env{}, err
 	}
-	namespace := naming.EnvName(sessionID, len(existing)+1)
+	projects, err := p.listComposeProjects(ctx, sessionID)
+	if err != nil {
+		return Env{}, DriverError{Code: "list_failed", Message: strings.TrimSpace(err.Error()), Hint: "could not list compose projects for session sequencing"}
+	}
+	namespace := naming.EnvName(sessionID, len(existing)+len(projects)+1)
 	if _, errs, err := p.run(ctx, p.composeUpArgs(namespace, spec.ComposePath)); err != nil {
 		return Env{}, DriverError{Code: "compose_failed", Message: strings.TrimSpace(errs), Hint: "check the compose file is valid and that a `podman compose` provider (docker-compose or podman-compose) is installed"}
 	}
@@ -278,9 +316,6 @@ func (p *Podman) destroyCompose(ctx context.Context, namespace string) error {
 	for _, v := range vols {
 		_, _, _ = p.run(ctx, append(p.baseArgs(), "volume", "rm", v))
 	}
-	if len(ids) == 0 {
-		return DriverError{Code: "not_found", Message: "no environment named " + namespace, Hint: "run `sbx env status --json` to list ids"}
-	}
 	return nil
 }
 
@@ -303,7 +338,10 @@ func (p *Podman) composePS(ctx context.Context, namespace string) ([]composePSRo
 
 func (p *Podman) statusCompose(ctx context.Context, namespace string) (Env, error) {
 	rows, err := p.composePS(ctx, namespace)
-	if err != nil || len(rows) == 0 {
+	if err != nil {
+		return Env{}, DriverError{Code: "status_failed", Message: err.Error(), Hint: "compose status query failed; check that a compose provider is installed"}
+	}
+	if len(rows) == 0 {
 		return Env{}, DriverError{Code: "not_found", Message: "no environment named " + namespace, Hint: "run `sbx env status --json` to list ids"}
 	}
 	env := Env{ID: namespace, Name: namespace, Namespace: namespace, Project: namespace, Network: namespace + "_default", Status: "running"}
@@ -399,6 +437,7 @@ func (p *Podman) Logs(ctx context.Context, id string, opts LogOpts) (string, err
 		return "", DriverError{Code: "not_found", Message: "no matching service for " + id, Hint: "run `sbx env status --json` to list ids/services"}
 	}
 	var buf strings.Builder
+	gotLogs := false
 	for _, cid := range cids {
 		largs := append(p.baseArgs(), "logs")
 		if opts.Tail > 0 {
@@ -409,7 +448,11 @@ func (p *Podman) Logs(ctx context.Context, id string, opts LogOpts) (string, err
 		if lerr != nil {
 			continue
 		}
+		gotLogs = true
 		buf.WriteString(lout)
+	}
+	if !gotLogs {
+		return "", DriverError{Code: "not_found", Message: "no logs for " + id, Hint: "run `sbx env status --json` to list ids/services"}
 	}
 	return buf.String(), nil
 }
