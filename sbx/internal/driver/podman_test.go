@@ -69,11 +69,39 @@ func TestPodmanCreateArgsShape(t *testing.T) {
 
 func TestPodmanNetworkArgsShape(t *testing.T) {
 	p := NewPodman("/s")
-	require.Contains(t, strings.Join(p.networkCreateArgs("sbx-abc-001-net"), " "), "network create sbx-abc-001-net")
+	joinedCreate := strings.Join(p.networkCreateArgs("sbx-abc-001-net"), " ")
+	require.Contains(t, joinedCreate, "network create")
+	require.Contains(t, joinedCreate, "--internal") // sem rota default → deny-by-default egress
+	require.Contains(t, joinedCreate, "sbx-abc-001-net")
 	require.Contains(t, strings.Join(p.networkRemoveArgs("sbx-abc-001-net"), " "), "network rm sbx-abc-001-net")
 	// rede também roda nos roots próprios (isolamento do engine do host)
 	require.Contains(t, strings.Join(p.networkCreateArgs("x"), " "), "--root")
-	require.Contains(t, strings.Join(p.networkCreateArgs("x"), " "), "--runroot")
+}
+
+func TestPodmanCreateArgsAddsHostGatewayAndProxyEnv(t *testing.T) {
+	p := NewPodman("/s")
+	joined := strings.Join(p.createArgs(containerSpec{
+		name:           "sbx-abc-001",
+		session:        "abcdef",
+		namespace:      "sbx-abc-001",
+		image:          "alpine:3",
+		network:        "sbx-abc-001-net",
+		addHostGateway: true,
+		envVars:        map[string]string{"HTTPS_PROXY": "http://host.containers.internal:8080"},
+	}), " ")
+	// alias do host resolvível dentro da rede interna
+	require.Contains(t, joined, "--add-host host.containers.internal:host-gateway")
+	// o proxy é injetado como env var (consumido de EnvSpec.EnvVars por M2)
+	require.Contains(t, joined, "--env HTTPS_PROXY=http://host.containers.internal:8080")
+	// segurança: continua nos roots próprios, sem porta fixa
+	require.Contains(t, joined, "--root")
+	require.NotContains(t, joined, "-p 0.0.0.0")
+}
+
+func TestPodmanCreateArgsNoAddHostWhenDisabled(t *testing.T) {
+	p := NewPodman("/s")
+	joined := strings.Join(p.createArgs(containerSpec{name: "n", session: "s", namespace: "n", image: "alpine:3"}), " ")
+	require.NotContains(t, joined, "--add-host")
 }
 
 func TestPodmanComposeUpArgsShape(t *testing.T) {
