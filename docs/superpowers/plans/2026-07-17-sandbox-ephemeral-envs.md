@@ -1677,7 +1677,9 @@ Backlog:
 
 ## MILESTONE 4 — Ciclo de vida por sessão + auto-destroy
 
-Backlog:
+> **Plano expandido (bite-sized):** [`milestones/M4.md`](./milestones/M4.md) — registry persistente (`OpenRegistry`), `DestroyAll` idempotente, `session start|end|supervise`, reconciliação de órfãos, supervisor dono do proxy M3.
+
+Backlog (resumo; detalhe e TDD em `milestones/M4.md`):
 
 - **T4.1 — Registry persistente de envs.** `internal/session`: JSON em `StateDir` com envs vivos por sessão (id, namespace, rede, volumes, portas). `Create`/`Destroy` atualizam. `seq` por sessão persiste aqui (substitui o contador em memória de M1).
 - **T4.2 — Supervisor/timeout.** `lifecycle.go`: processo supervisor por sessão que, em `SIGTERM`/fim/`--timeout`, executa `destroy --all` idempotente lendo o registry. Garante limpeza mesmo se o agente esquecer.
