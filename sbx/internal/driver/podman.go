@@ -66,14 +66,15 @@ func (p *Podman) Preflight(ctx context.Context) error {
 }
 
 type containerSpec struct {
-	name       string
-	session    string
-	namespace  string
-	image      string
-	network    string
-	extraNets  []string
-	envVars    map[string]string
-	publishAll bool
+	name           string
+	session        string
+	namespace      string
+	image          string
+	network        string
+	extraNets      []string
+	envVars        map[string]string
+	publishAll     bool
+	addHostGateway bool // --add-host host.containers.internal:host-gateway (reach the egress proxy)
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -97,6 +98,11 @@ func (p *Podman) createArgs(cs containerSpec) []string {
 	for _, n := range cs.extraNets {
 		args = append(args, "--network", n)
 	}
+	if cs.addHostGateway {
+		// Maps host.containers.internal to the internal-network gateway (the
+		// host), the only endpoint reachable from an --internal network.
+		args = append(args, "--add-host", "host.containers.internal:host-gateway")
+	}
 	for _, k := range sortedKeys(cs.envVars) { // sorted → argv determinístico
 		args = append(args, "--env", k+"="+cs.envVars[k])
 	}
@@ -108,7 +114,7 @@ func (p *Podman) createArgs(cs containerSpec) []string {
 }
 
 func (p *Podman) networkCreateArgs(net string) []string {
-	return append(p.baseArgs(), "network", "create", net)
+	return append(p.baseArgs(), "network", "create", "--internal", net)
 }
 
 func (p *Podman) networkRemoveArgs(net string) []string {
@@ -143,14 +149,15 @@ func (p *Podman) Create(ctx context.Context, sessionID string, spec EnvSpec) (En
 		return Env{}, DriverError{Code: "network_failed", Message: strings.TrimSpace(errs), Hint: "could not create the per-namespace network; check rootless networking (netavark/aardvark-dns)"}
 	}
 	cs := containerSpec{
-		name:       namespace,
-		session:    sessionID,
-		namespace:  namespace,
-		image:      image,
-		network:    network,
-		extraNets:  spec.Networks,
-		envVars:    spec.EnvVars,
-		publishAll: true, // portas EXPOSTAS publicadas em host-ports dinâmicos
+		name:           namespace,
+		session:        sessionID,
+		namespace:      namespace,
+		image:          image,
+		network:        network,
+		extraNets:      spec.Networks,
+		envVars:        spec.EnvVars,
+		publishAll:     true, // portas EXPOSTAS publicadas em host-ports dinâmicos
+		addHostGateway: true, // reach the egress proxy across the internal network
 	}
 	if _, errs, err := p.run(ctx, p.createArgs(cs)); err != nil {
 		_, _, _ = p.run(ctx, p.networkRemoveArgs(network)) // rollback best-effort
