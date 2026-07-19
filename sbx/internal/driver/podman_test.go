@@ -51,6 +51,20 @@ func TestPodmanCreateArgsShape(t *testing.T) {
 	require.Contains(t, joined, "--root")
 	require.Contains(t, joined, "--runroot")
 	require.NotContains(t, joined, "-p 0.0.0.0")
+
+	args = p.createArgs(containerSpec{
+		name:      "sbx-abc-001",
+		session:   "abcdef",
+		namespace: "sbx-abc-001",
+		image:     "alpine:3",
+		envVars:   map[string]string{"B": "2", "A": "1"},
+	})
+	joined = strings.Join(args, " ")
+	idxA := strings.Index(joined, "--env A=1")
+	idxB := strings.Index(joined, "--env B=2")
+	require.NotEqual(t, -1, idxA)
+	require.NotEqual(t, -1, idxB)
+	require.Less(t, idxA, idxB, "env vars must be sorted by key in argv")
 }
 
 func TestPodmanNetworkArgsShape(t *testing.T) {
@@ -59,6 +73,7 @@ func TestPodmanNetworkArgsShape(t *testing.T) {
 	require.Contains(t, strings.Join(p.networkRemoveArgs("sbx-abc-001-net"), " "), "network rm sbx-abc-001-net")
 	// rede também roda nos roots próprios (isolamento do engine do host)
 	require.Contains(t, strings.Join(p.networkCreateArgs("x"), " "), "--root")
+	require.Contains(t, strings.Join(p.networkCreateArgs("x"), " "), "--runroot")
 }
 
 func TestPodmanCreateRejectsCompose(t *testing.T) {

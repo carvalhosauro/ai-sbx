@@ -160,8 +160,13 @@ func (p *Podman) Destroy(ctx context.Context, id string) error {
 	return p.destroySingle(ctx, id)
 }
 
+func isNotFoundStderr(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "no such") || strings.Contains(s, "not found")
+}
+
 func (p *Podman) destroySingle(ctx context.Context, id string) error {
-	if _, errs, err := p.run(ctx, append(p.baseArgs(), "rm", "-f", id)); err != nil {
+	if _, errs, err := p.run(ctx, append(p.baseArgs(), "rm", "-f", id)); err != nil && !isNotFoundStderr(errs) {
 		return DriverError{Code: "destroy_failed", Message: strings.TrimSpace(errs), Hint: "id may not exist; run `sbx env status --json`"}
 	}
 	// Remove a rede do namespace; ignora "not found" para Destroy ser idempotente.
