@@ -9,9 +9,10 @@ import (
 )
 
 type Fake struct {
-	mu   sync.Mutex
-	seq  int
-	envs map[string]envRec
+	mu       sync.Mutex
+	seq      int
+	envs     map[string]envRec
+	LastSpec EnvSpec
 }
 
 type envRec struct {
@@ -26,6 +27,7 @@ func (f *Fake) Name() string { return "fake" }
 func (f *Fake) Create(_ context.Context, sessionID string, spec EnvSpec) (Env, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.LastSpec = spec
 	var id, name string
 	if spec.Name != "" {
 		id = spec.Name

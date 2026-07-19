@@ -113,6 +113,19 @@ func TestDestroyAllIdempotentViaCLI(t *testing.T) {
 	require.True(t, out == "[]\n" || out == "[]" || strings.Contains(out, "[]"))
 }
 
+func TestCreateInjectsProxyEnvFromRegistry(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	r, err := session.OpenRegistry("sess")
+	require.NoError(t, err)
+	require.NoError(t, r.SetProxy("http://host.containers.internal:9"))
+
+	d := driver.NewFake()
+	_, err = run(t, d, "--session", "sess", "env", "create")
+	require.NoError(t, err)
+	require.Equal(t, "http://host.containers.internal:9", d.LastSpec.EnvVars["HTTP_PROXY"])
+	require.Equal(t, "http://host.containers.internal:9", d.LastSpec.EnvVars["HTTPS_PROXY"])
+}
+
 func firstField(s string) string {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\t' || s[i] == '\n' || s[i] == ' ' {

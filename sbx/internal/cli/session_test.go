@@ -19,7 +19,12 @@ func TestSessionStartEndDestroysEnvs(t *testing.T) {
 	orig := startSupervisor
 	t.Cleanup(func() { startSupervisor = orig })
 	startSupervisor = func(sessionID, timeout string) (int, error) {
-		// simulate: no real fork; pretend pid 1; cleanup happens on end
+		addr, err := startSessionProxy(sessionID)
+		if err != nil {
+			return 0, err
+		}
+		r, _ := session.OpenRegistry(sessionID)
+		_ = r.SetProxy(addr)
 		return 1, nil
 	}
 

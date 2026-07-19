@@ -8,6 +8,7 @@ import (
 
 	"github.com/gustavocarvalho/sbx/internal/driver"
 	"github.com/gustavocarvalho/sbx/internal/naming"
+	"github.com/gustavocarvalho/sbx/internal/netpolicy"
 	"github.com/gustavocarvalho/sbx/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -116,6 +117,14 @@ func newCreateCmd() *cobra.Command {
 			}
 			name := naming.EnvName(d.session, seq)
 			spec := driver.EnvSpec{ComposePath: from, Name: name}
+			if addr := reg.ProxyAddr; addr != "" {
+				if spec.EnvVars == nil {
+					spec.EnvVars = map[string]string{}
+				}
+				for k, v := range netpolicy.ProxyEnv(addr) {
+					spec.EnvVars[k] = v
+				}
+			}
 			e, err := d.drv.Create(cmd.Context(), d.session, spec)
 			if err != nil {
 				return CLIError{Code: "create_failed", Message: err.Error(), Hint: "check the compose file path and that the engine is available"}

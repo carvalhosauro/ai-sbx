@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gustavocarvalho/sbx/internal/driver"
+	"github.com/gustavocarvalho/sbx/internal/netpolicy"
 	"github.com/gustavocarvalho/sbx/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +21,28 @@ func init() {
 			return driver.Select(os.Getenv("SBX_DRIVER"), session.StateDir(sid))
 		})
 		return session.ReconcileSession(ctx, d.drv, d.session)
+	}
+
+	var liveProxies sync.Map // string → *netpolicy.Proxy
+
+	startSessionProxy = func(sessionID string) (string, error) {
+		allow := netpolicy.DefaultAllow()
+		if merged, err := netpolicy.LoadAllow("sbx.allow"); err == nil {
+			allow = merged
+		}
+		p, err := netpolicy.StartProxy(allow)
+		if err != nil {
+			return "", err
+		}
+		liveProxies.Store(sessionID, p)
+		return p.Addr(), nil
+	}
+	stopSessionProxy = func(sessionID string) error {
+		v, ok := liveProxies.LoadAndDelete(sessionID)
+		if !ok {
+			return nil
+		}
+		return v.(*netpolicy.Proxy).Stop()
 	}
 }
 
@@ -92,8 +116,24 @@ func newSessionStartCmd() *cobra.Command {
 					deadline = time.Now().Add(dur)
 				}
 			}
+			reg, err = session.OpenRegistry(d.session)
+			if err != nil {
+				return err
+			}
 			if err := reg.SetSupervisor(pid, deadline); err != nil {
 				return err
+			}
+			pollDeadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(pollDeadline) {
+				r, _ := session.OpenRegistry(d.session)
+				if r.ProxyAddr != "" {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			r, _ := session.OpenRegistry(d.session)
+			if r.ProxyAddr == "" {
+				return CLIError{Code: "proxy_not_ready", Message: "session proxy did not become ready", Hint: "check: sbx session end && sbx session start"}
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session %s started (supervisor pid %d, timeout %s)\n", d.session, pid, timeoutStr)
 			return nil
